@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useMemo } from "react";
 
 // ==================== CONSTANTS ====================
 const GAP = 2;
@@ -175,6 +175,34 @@ function getForcedTopple(allBlocks, presentSet) {
     .map(b => b.id);
 }
 
+function getRowLeanMap(allBlocks, presentSet) {
+  const rowLean = {};
+  const maxRow = Math.max(...allBlocks.map(b => b.row));
+  for (let r = 1; r <= maxRow; r++) {
+    const rowBlocks = allBlocks.filter(b => b.row === r && presentSet.has(b.id));
+    if (rowBlocks.length === 0) continue;
+    const sups = allBlocks.filter(b => b.row === r - 1 && presentSet.has(b.id));
+    if (sups.length === 0) {
+      rowLean[r] = 1.2;
+      continue;
+    }
+    let mass = 0;
+    let weightedX = 0;
+    for (const b of rowBlocks) {
+      const m = b.isCrown ? 1.2 : b.isKeystone ? 1.4 : 1;
+      mass += m;
+      weightedX += (b.x + b.w / 2) * m;
+    }
+    const comX = weightedX / Math.max(1e-6, mass);
+    const left = Math.min(...sups.map(b => b.x));
+    const right = Math.max(...sups.map(b => b.x + b.w));
+    const half = Math.max(1, (right - left) / 2);
+    const center = (left + right) / 2;
+    rowLean[r] = (comX - center) / half;
+  }
+  return rowLean;
+}
+
 // ==================== WOBBLE-FALL ====================
 function getFallTransform(frame, x, y, w) {
   const cx = x + w / 2, cy = y + BLOCK_H / 2;
@@ -213,7 +241,6 @@ export default function GreaterThanJenga() {
   const [busy, setBusy] = useState(false);
   const [player, setPlayer] = useState(1);
   const [gameOver, setGameOver] = useState(null);
-  const [turnCount, setTurnCount] = useState(0);
   const [leanScore, setLeanScore] = useState(0);
   const animRef = useRef(null);
 
@@ -226,6 +253,7 @@ export default function GreaterThanJenga() {
 
   const bx = b => SVG_PAD + b.x;
   const by = b => svgH - SVG_PAD - (b.row + 1) * rowStep;
+  const rowLeanMap = useMemo(() => getRowLeanMap(allBlocks, present), [allBlocks, present]);
 
   const runFall = useCallback((ids, afterPresent, who, currentBlocks, crown) => {
     if (ids.length === 0) {
@@ -283,7 +311,6 @@ export default function GreaterThanJenga() {
   const handleClick = useCallback(block => {
     if (busy || gameOver || !present.has(block.id) || block.isCrown || block.isKeystone) return;
     setBusy(true);
-    setTurnCount(c => c + 1);
     setHovered(null);
     const next = new Set(present);
     next.delete(block.id);
@@ -305,7 +332,7 @@ export default function GreaterThanJenga() {
     setAllBlocks(newBlocks);
     setPresent(newPresent);
     setHovered(null); setFallingSet(new Set()); setFallFrames({});
-    setBusy(false); setPlayer(1); setGameOver(null); setTurnCount(0);
+    setBusy(false); setPlayer(1); setGameOver(null);
     setLeanScore(0);
   };
 
@@ -350,12 +377,6 @@ export default function GreaterThanJenga() {
           <span style={{ fontSize: 14, fontWeight: 800, color: pc.text }}>
             {pc.name}'S TURN
           </span>
-          <span style={{ fontSize: 11, fontWeight: 600, color: "#aaa" }}>
-            Turn {turnCount + 1}
-          </span>
-          <span style={{ fontSize: 11, fontWeight: 700, color: Math.abs(leanScore) > 0.7 ? "#b91c1c" : "#888" }}>
-            Lean {leanScore >= 0 ? "R" : "L"} {Math.min(99, Math.round(Math.abs(leanScore) * 100))}%
-          </span>
         </div>
       ) : (
         <div style={{ textAlign: "center", marginBottom: 10, animation: "fadeIn 0.5s ease-out" }}>
@@ -375,9 +396,6 @@ export default function GreaterThanJenga() {
       <div style={{
         border: "2px solid #1a1a1a", borderRadius: 2,
         padding: "6px", background: "#fff", overflow: "hidden",
-        transform: `rotate(${Math.max(-1, Math.min(1, leanScore)) * LEAN_VIS_DEG}deg)`,
-        transformOrigin: "50% 100%",
-        transition: busy ? "none" : "transform 220ms ease-out",
       }}>
         <svg width={svgW} height={svgH} viewBox={`0 0 ${svgW} ${svgH}`}
           style={{ display: "block", maxWidth: "100%", height: "auto" }}>
@@ -410,6 +428,15 @@ export default function GreaterThanJenga() {
               const ft = getFallTransform(frame, x, y, w);
               gT = `translate(0,${ft.ty}) ${ft.transform}`;
               gO = ft.opacity;
+            } else {
+              const rawRowLean = rowLeanMap[block.row] || 0;
+              const rowFactor = block.row / Math.max(1, maxRow);
+              const visualLean = Math.max(-1, Math.min(1, rawRowLean * (0.55 + rowFactor * 0.75)));
+              if (Math.abs(visualLean) > 0.02) {
+                const cx = x + w / 2;
+                const cy = y + h;
+                gT = `rotate(${visualLean * LEAN_VIS_DEG},${cx},${cy})`;
+              }
             }
 
             return (
