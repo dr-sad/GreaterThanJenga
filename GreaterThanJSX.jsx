@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef } from "react";
 
 // ==================== CONSTANTS ====================
 const GAP = 2;
@@ -11,10 +11,6 @@ const FALL_FRAMES = 21;
 const TOTAL_ANIM = WOBBLE_FRAMES + FALL_FRAMES;
 const W5 = 2.0;
 const WK = 10.4;
-const LEAN_DECAY = 0.72;
-const LEAN_GAIN = 0.55;
-const LEAN_FAIL = 0.98;
-const LEAN_VIS_DEG = 4.5;
 
 // ==================== RNG ====================
 function mulberry32(seed) {
@@ -147,62 +143,6 @@ function findCascade(allBlocks, presentSet) {
   return falling;
 }
 
-function getTowerLean(allBlocks, presentSet) {
-  const liveBlocks = allBlocks.filter(b => presentSet.has(b.id));
-  if (liveBlocks.length === 0) return 0;
-  const baseBlocks = liveBlocks.filter(b => b.row === 0);
-  if (baseBlocks.length === 0) return 1.5;
-
-  let mass = 0;
-  let weightedX = 0;
-  for (const b of liveBlocks) {
-    const m = b.isCrown ? 1.2 : b.isKeystone ? 1.4 : 1;
-    mass += m;
-    weightedX += (b.x + b.w / 2) * m;
-  }
-  const comX = weightedX / Math.max(1e-6, mass);
-
-  const left = Math.min(...baseBlocks.map(b => b.x));
-  const right = Math.max(...baseBlocks.map(b => b.x + b.w));
-  const half = Math.max(1, (right - left) / 2);
-  const center = (left + right) / 2;
-  return (comX - center) / half;
-}
-
-function getForcedTopple(allBlocks, presentSet) {
-  return allBlocks
-    .filter(b => b.row >= 1 && presentSet.has(b.id))
-    .map(b => b.id);
-}
-
-function getRowLeanMap(allBlocks, presentSet) {
-  const rowLean = {};
-  const maxRow = Math.max(...allBlocks.map(b => b.row));
-  for (let r = 1; r <= maxRow; r++) {
-    const rowBlocks = allBlocks.filter(b => b.row === r && presentSet.has(b.id));
-    if (rowBlocks.length === 0) continue;
-    const sups = allBlocks.filter(b => b.row === r - 1 && presentSet.has(b.id));
-    if (sups.length === 0) {
-      rowLean[r] = 1.2;
-      continue;
-    }
-    let mass = 0;
-    let weightedX = 0;
-    for (const b of rowBlocks) {
-      const m = b.isCrown ? 1.2 : b.isKeystone ? 1.4 : 1;
-      mass += m;
-      weightedX += (b.x + b.w / 2) * m;
-    }
-    const comX = weightedX / Math.max(1e-6, mass);
-    const left = Math.min(...sups.map(b => b.x));
-    const right = Math.max(...sups.map(b => b.x + b.w));
-    const half = Math.max(1, (right - left) / 2);
-    const center = (left + right) / 2;
-    rowLean[r] = (comX - center) / half;
-  }
-  return rowLean;
-}
-
 // ==================== WOBBLE-FALL ====================
 function getFallTransform(frame, x, y, w) {
   const cx = x + w / 2, cy = y + BLOCK_H / 2;
@@ -241,7 +181,6 @@ export default function GreaterThanJenga() {
   const [busy, setBusy] = useState(false);
   const [player, setPlayer] = useState(1);
   const [gameOver, setGameOver] = useState(null);
-  const [leanScore, setLeanScore] = useState(0);
   const animRef = useRef(null);
 
   const crownId = allBlocks.find(b => b.isCrown)?.id;
@@ -253,12 +192,8 @@ export default function GreaterThanJenga() {
 
   const bx = b => SVG_PAD + b.x;
   const by = b => svgH - SVG_PAD - (b.row + 1) * rowStep;
-  const rowLeanMap = useMemo(() => getRowLeanMap(allBlocks, present), [allBlocks, present]);
-
   const runFall = useCallback((ids, afterPresent, who, currentBlocks, crown) => {
     if (ids.length === 0) {
-      const rawLean = getTowerLean(currentBlocks, afterPresent);
-      setLeanScore(prev => prev * LEAN_DECAY + rawLean * LEAN_GAIN);
       setBusy(false);
       setPlayer(who === 1 ? 2 : 1);
       return;
@@ -290,23 +225,13 @@ export default function GreaterThanJenga() {
           setTimeout(() => runFall(more, next, who, currentBlocks, crown), 100);
         } else {
           if (!next.has(crown)) { setBusy(false); setGameOver({ loser: who }); return; }
-          const rawLean = getTowerLean(currentBlocks, next);
-          const nextLean = leanScore * LEAN_DECAY + rawLean * LEAN_GAIN;
-          setLeanScore(nextLean);
-          if (Math.abs(nextLean) >= LEAN_FAIL) {
-            const toppleAll = getForcedTopple(currentBlocks, next);
-            if (toppleAll.length > 0) {
-              setTimeout(() => runFall(toppleAll, next, who, currentBlocks, crown), 80);
-              return;
-            }
-          }
           setBusy(false);
           setPlayer(who === 1 ? 2 : 1);
         }
       }
     };
     animRef.current = requestAnimationFrame(tick);
-  }, [leanScore]);
+  }, []);
 
   const handleClick = useCallback(block => {
     if (busy || gameOver || !present.has(block.id) || block.isCrown || block.isKeystone) return;
@@ -315,14 +240,9 @@ export default function GreaterThanJenga() {
     const next = new Set(present);
     next.delete(block.id);
     setPresent(next);
-    const rawLean = getTowerLean(allBlocks, next);
-    const nextLean = leanScore * LEAN_DECAY + rawLean * LEAN_GAIN;
-    setLeanScore(nextLean);
-    const cascade = Math.abs(nextLean) >= LEAN_FAIL
-      ? getForcedTopple(allBlocks, next)
-      : findCascade(allBlocks, next);
+    const cascade = findCascade(allBlocks, next);
     setTimeout(() => runFall(cascade, next, player, allBlocks, crownId), 60);
-  }, [present, busy, gameOver, player, allBlocks, crownId, runFall, leanScore]);
+  }, [present, busy, gameOver, player, allBlocks, crownId, runFall]);
 
   const newGame = () => {
     if (animRef.current) cancelAnimationFrame(animRef.current);
@@ -333,7 +253,6 @@ export default function GreaterThanJenga() {
     setPresent(newPresent);
     setHovered(null); setFallingSet(new Set()); setFallFrames({});
     setBusy(false); setPlayer(1); setGameOver(null);
-    setLeanScore(0);
   };
 
   const winner = gameOver ? (gameOver.loser === 1 ? 2 : 1) : null;
@@ -428,15 +347,6 @@ export default function GreaterThanJenga() {
               const ft = getFallTransform(frame, x, y, w);
               gT = `translate(0,${ft.ty}) ${ft.transform}`;
               gO = ft.opacity;
-            } else {
-              const rawRowLean = rowLeanMap[block.row] || 0;
-              const rowFactor = block.row / Math.max(1, maxRow);
-              const visualLean = Math.max(-1, Math.min(1, rawRowLean * (0.55 + rowFactor * 0.75)));
-              if (Math.abs(visualLean) > 0.02) {
-                const cx = x + w / 2;
-                const cy = y + h;
-                gT = `rotate(${visualLean * LEAN_VIS_DEG},${cx},${cy})`;
-              }
             }
 
             return (
